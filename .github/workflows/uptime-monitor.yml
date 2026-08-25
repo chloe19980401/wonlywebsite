@@ -1,7 +1,7 @@
 name: Uptime Monitor
 
-# 官网可用性监控:每小时探测一次首页与文章列表页。
-# 连续 3 次(间隔 20 秒)都失败才告警,避免网络抖动误报。
+# 官网可用性监控:每小时从 GitHub Runner 直连探测首页与文章列表页。
+# 直连失败时再通过独立公网抓取节点复核；两条链路都失败才告警。
 # 分钟取 37(错峰,整点 cron 在 GitHub 高峰期会被丢弃)。
 
 on:
@@ -19,16 +19,45 @@ jobs:
       - name: Probe site
         id: probe
         run: |
-          check() {
+          check_direct() {
             for i in 1 2 3; do
-              code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 -L "$1") && [ "$code" = "200" ] && return 0
-              echo "attempt $i on $1 -> $code"; sleep 20
+              if result=$(curl -4 -sS -o /dev/null -w "%{http_code}" --connect-timeout 10 -m 20 -L "$1" 2>&1); then
+                status=0
+              else
+                status=$?
+              fi
+              [ "$status" = "0" ] && [ "$result" = "200" ] && return 0
+              echo "direct attempt $i on $1 -> curl=$status result=$result"
+              sleep 10
             done
             return 1
           }
+
+          check_public() {
+            target="https://r.jina.ai/https://www.wonlyglobal.com$1?monitor=$(date +%s)"
+            body=$(mktemp)
+            if code=$(curl -sS -o "$body" -w "%{http_code}" --connect-timeout 10 -m 30 -L "$target" 2>&1); then
+              status=0
+            else
+              status=$?
+            fi
+            if [ "$status" = "0" ] && [ "$code" = "200" ] && grep -qi "WONLY" "$body"; then
+              rm -f "$body"
+              echo "public fallback passed for $1"
+              return 0
+            fi
+            echo "public fallback failed for $1 -> curl=$status result=$code"
+            rm -f "$body"
+            return 1
+          }
+
+          check() {
+            check_direct "$1" || check_public "$2"
+          }
+
           FAILED=""
-          check "https://www.wonlyglobal.com/" || FAILED="$FAILED 首页"
-          check "https://www.wonlyglobal.com/insights/" || FAILED="$FAILED 文章页"
+          check "https://www.wonlyglobal.com/" "/" || FAILED="$FAILED 首页"
+          check "https://www.wonlyglobal.com/insights/" "/insights/" || FAILED="$FAILED 文章页"
           if [ -n "$FAILED" ]; then
             echo "failed_pages=$FAILED" >> "$GITHUB_OUTPUT"
             exit 1
@@ -41,4 +70,4 @@ jobs:
           PAGES: ${{ steps.probe.outputs.failed_pages }}
         run: |
           [ -n "$HOOK" ] && curl -s -m 10 -X POST "$HOOK" -H 'Content-Type: application/json' \
-            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"【官网告警】www.wonlyglobal.com 访问异常(${PAGES}),连续3次探测失败。请检查:1) https://www.githubstatus.com 看 GitHub Pages 是否故障 2) DNS 解析是否正常 3) Actions 最近部署是否成功。\"}}" || true
+            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"【官网告警】www.wonlyglobal.com 访问异常(${PAGES})，GitHub Runner 直连与独立公网节点均探测失败。请检查：1) DNS 是否仍指向 43.153.252.64；2) 服务器 HTTPS/Ingress 是否正常；3) Codeup 生产流水线及 Kubernetes Pod 是否健康。\"}}" || true
