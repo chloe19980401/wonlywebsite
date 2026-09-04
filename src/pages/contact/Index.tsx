@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Mail, MessageCircle, MapPin, ArrowUpRight, Check } from "lucide-react";
 import { SiteHeader, SiteFooter, GOLD, DARK, CHAMP, MUTED } from "@/lib/site-ui";
 import { trackLead } from "@/lib/analytics";
 import { useSeo } from "@/lib/seo";
 import { submitEnquiry } from "@/lib/form-config";
 import { useLocale } from "@/lib/i18n";
+import { journeyEvent, serializeJourney, type InquiryJourneyEvent } from "@/lib/inquiry-journey";
 
 /* ── CMS 联系页文案: content/settings/contact.json（在 /admin 站点后台编辑）──
    每个字段都有代码默认值兜底，JSON 缺失或留空不会让页面变空白。 */
@@ -44,8 +45,14 @@ export default function Contact() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const journey = useRef<InquiryJourneyEvent[]>([journeyEvent("form_open", { section_name: "contact_form" })]);
+  const started = useRef(false);
 
   const set = (k: keyof typeof form, v: string) => {
+    if (!started.current) {
+      started.current = true;
+      journey.current.push(journeyEvent("form_start", { section_name: "contact_form" }));
+    }
     setForm((f) => ({ ...f, [k]: v }));
     setErrors((e) => { if (!e[k]) return e; const n = { ...e }; delete n[k]; return n; });
   };
@@ -63,6 +70,7 @@ export default function Contact() {
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     setSending(true);
+    journey.current.push(journeyEvent("form_submit", { section_name: "contact_form" }));
     try {
       const data = await submitEnquiry({
         subject: "New WONLY Contact Enquiry",
@@ -75,6 +83,8 @@ export default function Contact() {
         phone: form.phone,
         message: form.message,
         source: "contact_page",
+        journey_session: journey.current[0]?.session_ref || "",
+        journey_events: serializeJourney(journey.current),
       });
       if (data.success) { setSent(true); trackLead({ form_location: "contact_page" }); }
       else setErrors({ submit: data.message || "Submission failed. Please email inquiry@wonlyglobal.com." });

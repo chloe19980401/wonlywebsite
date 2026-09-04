@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { trackLead } from "@/lib/analytics";
 import { submitEnquiry } from "@/lib/form-config";
 import { LANGUAGES, pathForLocale, useLocale } from "@/lib/i18n";
+import { journeyEvent, serializeJourney, type InquiryJourneyEvent } from "@/lib/inquiry-journey";
 
 /* Shared silver-white-gold design tokens (matches the homepage) */
 export const GOLD = "#BFA06A";
@@ -94,9 +95,16 @@ export function QuoteModal() {
   const [picks, setPicks] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
+  const journey = useRef<InquiryJourneyEvent[]>([]);
+  const started = useRef(false);
 
   useEffect(() => {
     if (open) {
+      journey.current = [
+        journeyEvent("cta_click", { cta_name: "Get Solutions & Quote", product_context: presetSubject || presetBiz }),
+        journeyEvent("form_open", { section_name: "quote_modal", product_context: presetSubject || presetBiz }),
+      ];
+      started.current = false;
       document.body.style.overflow = "hidden";
       setForm((f) => ({ ...f, biz: presetBiz || f.biz, message: presetSubject && !f.message ? `I'm interested in WONLY's ${presetSubject}. ` : f.message }));
     } else {
@@ -108,6 +116,10 @@ export function QuoteModal() {
   if (!open) return null;
 
   const set = (k: keyof typeof form, v: string) => {
+    if (!started.current) {
+      started.current = true;
+      journey.current.push(journeyEvent("form_start", { section_name: "quote_modal", product_context: presetSubject || presetBiz }));
+    }
     setForm((f) => ({ ...f, [k]: v }));
     setErrors((e) => { if (!e[k]) return e; const n = { ...e }; delete n[k]; return n; });
   };
@@ -126,6 +138,7 @@ export function QuoteModal() {
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     setSending(true);
+    journey.current.push(journeyEvent("form_submit", { section_name: "quote_modal", product_context: presetSubject || presetBiz }));
     try {
       const data = await submitEnquiry({
         subject: presetSubject ? `WONLY Enquiry \u2014 ${presetSubject}` : "New WONLY Website Enquiry",
@@ -142,6 +155,8 @@ export function QuoteModal() {
         interests: picks.join(", "),
         message: form.message,
         source: "quote_modal",
+        journey_session: journey.current[0]?.session_ref || "",
+        journey_events: serializeJourney(journey.current),
       });
       if (data.success) { setSent(true); trackLead({ form_location: "quote_modal", business_type: form.biz || "" }); }
       else setErrors({ submit: data.message || "Submission failed. Please email inquiry@wonlyglobal.com." });
